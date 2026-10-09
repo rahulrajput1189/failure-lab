@@ -187,6 +187,7 @@ func main() {
 	)
 
 	orderService.failAfterInventoryReserve = config.FailAfterInventoryReserve
+	orderService.failAfterInventoryRelease = config.FailAfterInventoryRelease
 
 	http.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

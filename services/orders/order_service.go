@@ -15,6 +15,7 @@ type OrderService struct {
 	orderItemRepo             *OrderItemRepository
 	inventoryClient           *InventoryClient
 	failAfterInventoryReserve bool
+	failAfterInventoryRelease bool
 }
 
 func NewOrderService(
@@ -214,6 +215,15 @@ func (s *OrderService) CancelOrder(
 		orderItem.ProductID,
 		orderItem.Quantity,
 	)
+
+	if s.failAfterInventoryRelease {
+		tx.Rollback(ctx)
+
+		return nil, fmt.Errorf(
+			"failure injected after inventory release",
+		)
+	}
+
 	if err != nil {
 		tx.Rollback(ctx)
 		return nil, fmt.Errorf(

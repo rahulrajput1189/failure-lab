@@ -13,6 +13,7 @@ type Config struct {
 	DBPassword                string
 	DBName                    string
 	FailAfterInventoryReserve bool
+	FailAfterInventoryRelease bool
 }
 
 func loadConfig() Config {
@@ -24,6 +25,10 @@ func loadConfig() Config {
 		DBPassword:                getEnv("DB_PASSWORD", "lab"),
 		DBName:                    getEnv("DB_NAME", "failurelab"),
 		FailAfterInventoryReserve: getEnv("FAILURELAB_FAIL_AFTER_INVENTORY_RESERVATION", "false") == "true",
+		FailAfterInventoryRelease: getEnv(
+			"FAILURELAB_FAIL_AFTER_INVENTORY_RELEASE",
+			"false",
+		) == "true",
 	}
 }
 
