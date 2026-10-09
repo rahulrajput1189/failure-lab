@@ -27,6 +27,12 @@ var scenarios = map[string]Scenario{
 		Reproduce:   reproduceOrderCancellationInventoryLeak,
 		Verify:      verifyOrderCancellationInventoryLeak,
 	},
+	"inventory-release-order-rollback": {
+		Name:        "inventory-release-order-rollback",
+		Description: "Inventory is released but the order cancellation transaction rolls back.",
+		Reproduce:   reproduceInventoryReleaseOrderRollback,
+		Verify:      verifyInventoryReleaseOrderRollback,
+	},
 }
 
 func getScenario(name string) Scenario {
@@ -100,6 +106,50 @@ func verifyInventoryReservationLeak() error {
 	fmt.Println("✓ inventory reservation leaked")
 	fmt.Println("✓ orders transaction rolled back")
 	fmt.Println("✓ order item was rolled back")
+	fmt.Println()
+	fmt.Println("FAILURE REPRODUCED")
+
+	return nil
+}
+
+func verifyInventoryReleaseOrderRollback() error {
+	fmt.Println("→ verifying inventory-release-order-rollback")
+	fmt.Println()
+
+	stock, err := queryInventoryStock(1)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Inventory stock: %d\n", stock)
+
+	if stock != 10 {
+		return fmt.Errorf(
+			"expected inventory stock to return to 10, got %d",
+			stock,
+		)
+	}
+
+	orderStatus, err := queryPostgres(
+		"SELECT status FROM orders WHERE id = 1",
+	)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Order status: %s\n", orderStatus)
+
+	if strings.TrimSpace(orderStatus) != "PENDING" {
+		return fmt.Errorf(
+			"expected order to remain PENDING after rollback, got %s",
+			orderStatus,
+		)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ inventory was released")
+	fmt.Println("✓ order cancellation transaction rolled back")
+	fmt.Println("✓ order remains PENDING")
 	fmt.Println()
 	fmt.Println("FAILURE REPRODUCED")
 

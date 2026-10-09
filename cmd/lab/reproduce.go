@@ -139,6 +139,83 @@ func reproduceOrderCancellationInventoryLeak() error {
 	return verifyOrderCancellationInventoryLeak()
 }
 
+func reproduceInventoryReleaseOrderRollback() error {
+	fmt.Println("→ reproducing inventory-release-order-rollback")
+	fmt.Println()
+
+	fmt.Println("→ resetting FailureLab")
+	reset()
+
+	fmt.Println()
+	fmt.Println("→ starting Orders service with failure injection")
+
+	stopOrdersService()
+
+	if err := startOrdersServiceWithEnvironment(
+		"FAILURELAB_FAIL_AFTER_INVENTORY_RELEASE=true",
+	); err != nil {
+		return err
+	}
+
+	if err := waitForOrdersService(); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("→ creating order")
+
+	statusCode, response, err := createOrderRequest()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("HTTP status: %s\n", statusCode)
+	fmt.Printf("Response: %s\n", response)
+
+	if statusCode != "201" {
+		return fmt.Errorf(
+			"expected HTTP 201 when creating order, got %s",
+			statusCode,
+		)
+	}
+
+	var order reproducedOrder
+
+	if err := json.Unmarshal([]byte(response), &order); err != nil {
+		return fmt.Errorf(
+			"failed to decode created order: %w",
+			err,
+		)
+	}
+
+	fmt.Printf("✓ order created: %d\n", order.ID)
+
+	fmt.Println()
+	fmt.Println("→ cancelling order with injected failure")
+
+	cancelStatus, cancelResponse, err := cancelOrderRequest(order.ID)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("HTTP status: %s\n", cancelStatus)
+	fmt.Printf("Response: %s\n", cancelResponse)
+
+	if cancelStatus != "500" {
+		return fmt.Errorf(
+			"expected HTTP 500 from injected failure, got %s",
+			cancelStatus,
+		)
+	}
+
+	fmt.Println("✓ injected failure triggered")
+
+	fmt.Println()
+	fmt.Println("→ verifying scenario")
+
+	return verifyInventoryReleaseOrderRollback()
+}
+
 func createOrderRequest() (string, string, error) {
 	cmd := exec.Command(
 		"curl",
