@@ -41,14 +41,9 @@ func (c *InventoryClient) GetProduct(
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
-		fmt.Sprintf(
-			"%s/products/%d",
-			c.baseURL,
-			productID,
-		),
+		fmt.Sprintf("%s/products/%d", c.baseURL, productID),
 		nil,
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to create inventory request: %w",
@@ -63,7 +58,6 @@ func (c *InventoryClient) GetProduct(
 			err,
 		)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
@@ -98,12 +92,26 @@ func (c *InventoryClient) ReserveStock(
 	productID int64,
 	quantity int,
 ) (*InventoryProduct, error) {
-	body, err := json.Marshal(
-		ReserveStockRequest{
-			Quantity: quantity,
-		},
-	)
+	return c.changeStock(ctx, productID, quantity, "reserve")
+}
 
+func (c *InventoryClient) ReleaseStock(
+	ctx context.Context,
+	productID int64,
+	quantity int,
+) (*InventoryProduct, error) {
+	return c.changeStock(ctx, productID, quantity, "release")
+}
+
+func (c *InventoryClient) changeStock(
+	ctx context.Context,
+	productID int64,
+	quantity int,
+	action string,
+) (*InventoryProduct, error) {
+	body, err := json.Marshal(ReserveStockRequest{
+		Quantity: quantity,
+	})
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to encode inventory request: %w",
@@ -115,13 +123,13 @@ func (c *InventoryClient) ReserveStock(
 		ctx,
 		http.MethodPost,
 		fmt.Sprintf(
-			"%s/products/%d/reserve",
+			"%s/products/%d/%s",
 			c.baseURL,
 			productID,
+			action,
 		),
 		bytes.NewReader(body),
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to create inventory request: %w",
@@ -129,10 +137,7 @@ func (c *InventoryClient) ReserveStock(
 		)
 	}
 
-	req.Header.Set(
-		"Content-Type",
-		"application/json",
-	)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -141,7 +146,6 @@ func (c *InventoryClient) ReserveStock(
 			err,
 		)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {

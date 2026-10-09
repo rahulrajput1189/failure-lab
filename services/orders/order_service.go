@@ -194,34 +194,33 @@ func (s *OrderService) CancelOrder(
 	orderRepo := NewOrderRepository(tx)
 	orderItemRepo := NewOrderItemRepository(tx)
 
-	order, err := orderRepo.Cancel(
-		ctx,
-		orderID,
-	)
+	order, err := orderRepo.Cancel(ctx, orderID)
 	if err != nil {
 		tx.Rollback(ctx)
-
 		return nil, err
 	}
 
-	_, err = orderItemRepo.GetByOrderID(
-		ctx,
-		orderID,
-	)
+	orderItem, err := orderItemRepo.GetByOrderID(ctx, orderID)
 	if err != nil {
 		tx.Rollback(ctx)
-
 		return nil, fmt.Errorf(
 			"failed to get order item: %w",
 			err,
 		)
 	}
 
-	// Intentionally missing:
-	//
-	// inventoryClient.ReleaseStock(...)
-	//
-	// This is the failure we are going to reproduce.
+	_, err = s.inventoryClient.ReleaseStock(
+		ctx,
+		orderItem.ProductID,
+		orderItem.Quantity,
+	)
+	if err != nil {
+		tx.Rollback(ctx)
+		return nil, fmt.Errorf(
+			"failed to release inventory for cancelled order: %w",
+			err,
+		)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf(

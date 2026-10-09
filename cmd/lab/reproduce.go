@@ -231,9 +231,9 @@ func verifyOrderCancellationInventoryLeak() error {
 
 	fmt.Printf("Inventory stock: %d\n", stock)
 
-	if stock != 8 {
+	if stock != 10 {
 		return fmt.Errorf(
-			"expected inventory stock to remain 8 after leaked reservation, got %d",
+			"expected inventory stock to return to 10 after cancellation, got %d",
 			stock,
 		)
 	}
@@ -256,9 +256,10 @@ func verifyOrderCancellationInventoryLeak() error {
 
 	fmt.Println()
 	fmt.Println("✓ order was cancelled")
-	fmt.Println("✓ inventory reservation was not released")
+	fmt.Println("✓ inventory reservation was released")
+	fmt.Println("✓ inventory stock was restored")
 	fmt.Println()
-	fmt.Println("FAILURE REPRODUCED")
+	fmt.Println("FIX VERIFIED")
 
 	return nil
 }
