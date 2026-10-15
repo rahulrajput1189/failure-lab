@@ -23,14 +23,41 @@ func newPaymentTestDB(t *testing.T) *pgxpool.Pool {
 func createPaymentForTest(t *testing.T, repo *PaymentRepository) *Payment {
 	t.Helper()
 
-	payment, err := repo.Create(context.Background(), 1, 2500)
+	ctx := context.Background()
+	var orderID int64
+
+	err := repo.db.QueryRow(
+		ctx,
+		`INSERT INTO orders (user_id, status, total_cents)
+		 SELECT id, 'PENDING', 2500
+		 FROM users
+		 ORDER BY id
+		 LIMIT 1
+		 RETURNING id`,
+	).Scan(&orderID)
+	if err != nil {
+		t.Fatalf("failed to create test order: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := repo.db.Exec(
+			ctx,
+			`DELETE FROM orders WHERE id = $1`,
+			orderID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test order: %v", err)
+		}
+	})
+
+	payment, err := repo.Create(ctx, orderID, 2500)
 	if err != nil {
 		t.Fatalf("failed to create test payment: %v", err)
 	}
 
 	t.Cleanup(func() {
 		_, err := repo.db.Exec(
-			context.Background(),
+			ctx,
 			`DELETE FROM payments WHERE id = $1`,
 			payment.ID,
 		)
@@ -51,8 +78,8 @@ func TestPaymentRepositoryCreate(t *testing.T) {
 	if payment.ID <= 0 {
 		t.Fatalf("expected a generated payment ID, got %d", payment.ID)
 	}
-	if payment.OrderID != 1 {
-		t.Fatalf("expected order ID 1, got %d", payment.OrderID)
+	if payment.OrderID <= 0 {
+		t.Fatalf("expected a valid order ID, got %d", payment.OrderID)
 	}
 	if payment.Status != PaymentStatusPending {
 		t.Fatalf("expected status %s, got %s", PaymentStatusPending, payment.Status)

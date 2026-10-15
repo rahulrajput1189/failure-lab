@@ -1,6 +1,12 @@
 package main
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+)
 
 type Order struct {
 	ID         int64
@@ -39,7 +45,6 @@ func (r *OrderRepository) Create(
 		&order.Status,
 		&order.TotalCents,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -65,12 +70,51 @@ func (r *OrderRepository) GetByID(
 		&order.Status,
 		&order.TotalCents,
 	)
-
 	if err != nil {
 		return nil, err
 	}
 
 	return order, nil
+}
+
+func (r *OrderRepository) Confirm(
+	ctx context.Context,
+	orderID int64,
+) (*Order, error) {
+	order := &Order{}
+
+	err := r.db.QueryRow(
+		ctx,
+		`UPDATE orders
+		 SET status = 'CONFIRMED'
+		 WHERE id = $1 AND status = 'PENDING'
+		 RETURNING id, user_id, status, total_cents`,
+		orderID,
+	).Scan(
+		&order.ID,
+		&order.UserID,
+		&order.Status,
+		&order.TotalCents,
+	)
+	if err == nil {
+		return order, nil
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("confirm order: %w", err)
+	}
+
+	existing, lookupErr := r.GetByID(ctx, orderID)
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+
+	return nil, fmt.Errorf(
+		"cannot confirm order %d from status %s: %w",
+		orderID,
+		existing.Status,
+		ErrInvalidOrderState,
+	)
 }
 
 func (r *OrderRepository) Cancel(
@@ -83,8 +127,7 @@ func (r *OrderRepository) Cancel(
 		ctx,
 		`UPDATE orders
 		 SET status = 'CANCELLED'
-		 WHERE id = $1
-		   AND status = 'PENDING'
+		 WHERE id = $1 AND status = 'PENDING'
 		 RETURNING id, user_id, status, total_cents`,
 		orderID,
 	).Scan(
@@ -93,10 +136,23 @@ func (r *OrderRepository) Cancel(
 		&order.Status,
 		&order.TotalCents,
 	)
+	if err == nil {
+		return order, nil
+	}
 
-	if err != nil {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 
-	return order, nil
+	existing, lookupErr := r.GetByID(ctx, orderID)
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+
+	return nil, fmt.Errorf(
+		"cannot cancel order %d from status %s: %w",
+		orderID,
+		existing.Status,
+		ErrInvalidOrderState,
+	)
 }

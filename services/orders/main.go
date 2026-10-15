@@ -29,6 +29,9 @@ func writeOrderError(w http.ResponseWriter, err error) {
 	case errors.Is(err, pgx.ErrNoRows):
 		http.Error(w, "order not found", http.StatusNotFound)
 
+	case errors.Is(err, ErrInvalidOrderState):
+		http.Error(w, err.Error(), http.StatusConflict)
+
 	default:
 		log.Printf("order request failed: %v", err)
 
@@ -185,6 +188,12 @@ func main() {
 		orderItemRepo,
 		inventoryClient,
 	)
+
+	paymentClient := NewPaymentClient(
+		config.PaymentServiceURL,
+		http.DefaultClient,
+	)
+	orderService.SetPaymentClient(paymentClient)
 
 	orderService.failAfterInventoryReserve = config.FailAfterInventoryReserve
 	orderService.failAfterInventoryRelease = config.FailAfterInventoryRelease

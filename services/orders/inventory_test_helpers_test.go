@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type testInventoryServer struct {
@@ -33,53 +36,36 @@ func newTestInventoryServer(t *testing.T) *testInventoryServer {
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
-		path := strings.TrimPrefix(
-			r.URL.Path,
-			"/products/",
-		)
-
-		parts := strings.Split(
-			strings.TrimSuffix(path, "/"),
-			"/",
-		)
+		path := strings.TrimPrefix(r.URL.Path, "/products/")
+		parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
 
 		if len(parts) == 0 || parts[0] == "" {
 			http.NotFound(w, r)
 			return
 		}
 
-		productID, err := strconv.ParseInt(
-			parts[0],
-			10,
-			64,
-		)
-
+		productID, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			http.Error(
-				w,
-				"invalid product ID",
-				http.StatusBadRequest,
-			)
+			http.Error(w, "invalid product ID", http.StatusBadRequest)
 			return
 		}
 
-		if len(parts) == 1 &&
-			r.Method == http.MethodGet {
-			inventory.getProduct(
-				w,
-				productID,
-			)
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			inventory.getProduct(w, productID)
 			return
 		}
 
 		if len(parts) == 2 &&
 			parts[1] == "reserve" &&
 			r.Method == http.MethodPost {
-			inventory.reserveStock(
-				w,
-				r,
-				productID,
-			)
+			inventory.reserveStock(w, r, productID)
+			return
+		}
+
+		if len(parts) == 2 &&
+			parts[1] == "release" &&
+			r.Method == http.MethodPost {
+			inventory.releaseStock(w, r, productID)
 			return
 		}
 
@@ -103,13 +89,8 @@ func (s *testInventoryServer) getProduct(
 	defer s.mu.Unlock()
 
 	stock, exists := s.stock[productID]
-
 	if !exists {
-		http.Error(
-			w,
-			"product not found",
-			http.StatusNotFound,
-		)
+		http.Error(w, "product not found", http.StatusNotFound)
 		return
 	}
 
@@ -120,13 +101,8 @@ func (s *testInventoryServer) getProduct(
 		Stock:      stock,
 	}
 
-	w.Header().Set(
-		"Content-Type",
-		"application/json",
-	)
-
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
 	_ = json.NewEncoder(w).Encode(product)
 }
 
@@ -137,23 +113,13 @@ func (s *testInventoryServer) reserveStock(
 ) {
 	var request ReserveStockRequest
 
-	if err := json.NewDecoder(
-		r.Body,
-	).Decode(&request); err != nil {
-		http.Error(
-			w,
-			"invalid JSON",
-			http.StatusBadRequest,
-		)
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	if request.Quantity <= 0 {
-		http.Error(
-			w,
-			"quantity must be greater than zero",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "quantity must be greater than zero", http.StatusBadRequest)
 		return
 	}
 
@@ -161,22 +127,13 @@ func (s *testInventoryServer) reserveStock(
 	defer s.mu.Unlock()
 
 	stock, exists := s.stock[productID]
-
 	if !exists {
-		http.Error(
-			w,
-			"product not found",
-			http.StatusNotFound,
-		)
+		http.Error(w, "product not found", http.StatusNotFound)
 		return
 	}
 
 	if request.Quantity > stock {
-		http.Error(
-			w,
-			"insufficient stock",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "insufficient stock", http.StatusBadRequest)
 		return
 	}
 
@@ -189,21 +146,53 @@ func (s *testInventoryServer) reserveStock(
 		Stock:      s.stock[productID],
 	}
 
-	w.Header().Set(
-		"Content-Type",
-		"application/json",
-	)
-
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(product)
+}
 
+func (s *testInventoryServer) releaseStock(
+	w http.ResponseWriter,
+	r *http.Request,
+	productID int64,
+) {
+	var request ReserveStockRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if request.Quantity <= 0 {
+		http.Error(w, "quantity must be greater than zero", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, exists := s.stock[productID]
+	if !exists {
+		http.Error(w, "product not found", http.StatusNotFound)
+		return
+	}
+
+	s.stock[productID] += request.Quantity
+
+	product := InventoryProduct{
+		ID:         productID,
+		Name:       testProductName(productID),
+		PriceCents: testProductPrice(productID),
+		Stock:      s.stock[productID],
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(product)
 }
 
 func (s *testInventoryServer) client() *InventoryClient {
-	return NewInventoryClient(
-		s.server.URL,
-		s.server.Client(),
-	)
+	return NewInventoryClient(s.server.URL, s.server.Client())
 }
 
 func (s *testInventoryServer) resetStock(
@@ -239,5 +228,62 @@ func testProductPrice(productID int64) int {
 		return 2500
 	default:
 		return 0
+	}
+}
+
+func testOrderSnapshot(t *testing.T, db *pgxpool.Pool) int64 {
+	t.Helper()
+
+	var maxID int64
+	err := db.QueryRow(
+		context.Background(),
+		"SELECT COALESCE(MAX(id), 0) FROM orders",
+	).Scan(&maxID)
+	if err != nil {
+		t.Fatalf("failed to snapshot orders: %v", err)
+	}
+
+	return maxID
+}
+
+func cleanupOrdersAfter(
+	t *testing.T,
+	db *pgxpool.Pool,
+	maxID int64,
+) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	_, err := db.Exec(
+		ctx,
+		`DELETE FROM payments
+		 WHERE order_id IN (
+		     SELECT id FROM orders WHERE id > $1
+		 )`,
+		maxID,
+	)
+	if err != nil {
+		t.Errorf("failed to clean test payments: %v", err)
+		return
+	}
+
+	_, err = db.Exec(
+		ctx,
+		"DELETE FROM order_items WHERE order_id > $1",
+		maxID,
+	)
+	if err != nil {
+		t.Errorf("failed to clean test order items: %v", err)
+		return
+	}
+
+	_, err = db.Exec(
+		ctx,
+		"DELETE FROM orders WHERE id > $1",
+		maxID,
+	)
+	if err != nil {
+		t.Errorf("failed to clean test orders: %v", err)
 	}
 }

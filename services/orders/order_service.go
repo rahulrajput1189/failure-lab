@@ -16,6 +16,7 @@ type OrderService struct {
 	inventoryClient           *InventoryClient
 	failAfterInventoryReserve bool
 	failAfterInventoryRelease bool
+	paymentClient             *PaymentClient
 }
 
 func NewOrderService(
@@ -32,12 +33,11 @@ func NewOrderService(
 	}
 
 	return &OrderService{
-		db:                        db,
-		userRepo:                  userRepo,
-		orderRepo:                 orderRepo,
-		orderItemRepo:             orderItemRepo,
-		inventoryClient:           inventoryClient,
-		failAfterInventoryReserve: false,
+		db:              db,
+		userRepo:        userRepo,
+		orderRepo:       orderRepo,
+		orderItemRepo:   orderItemRepo,
+		inventoryClient: inventoryClient,
 	}
 }
 
@@ -170,6 +170,37 @@ func (s *OrderService) CreateOrder(
 		)
 	}
 
+	if s.paymentClient != nil {
+		payment, err := s.paymentClient.CreatePayment(
+			ctx,
+			order.ID,
+			order.TotalCents,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"order %d created but payment creation failed: %w",
+				order.ID,
+				err,
+			)
+		}
+
+		if _, err := s.paymentClient.AuthorizePayment(ctx, payment.ID); err != nil {
+			return nil, fmt.Errorf(
+				"order %d created but payment authorization failed: %w",
+				order.ID,
+				err,
+			)
+		}
+
+		order, err = s.orderRepo.Confirm(ctx, order.ID)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"payment authorized but order confirmation failed: %w",
+				err,
+			)
+		}
+	}
+
 	return order, nil
 }
 
@@ -240,4 +271,8 @@ func (s *OrderService) CancelOrder(
 	}
 
 	return order, nil
+}
+
+func (s *OrderService) SetPaymentClient(client *PaymentClient) {
+	s.paymentClient = client
 }

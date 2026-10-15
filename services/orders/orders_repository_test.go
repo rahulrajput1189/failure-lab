@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -57,17 +58,10 @@ func TestOrderRepositoryGetByID(t *testing.T) {
 
 	ctx := context.Background()
 
+	snapshot := testOrderSnapshot(t, db)
+
 	t.Cleanup(func() {
-		_, err := db.Exec(ctx, "DELETE FROM order_items")
-		if err != nil {
-			t.Errorf("failed to clean order items: %v", err)
-		}
-
-		_, err = db.Exec(ctx, "DELETE FROM orders")
-		if err != nil {
-			t.Errorf("failed to clean orders: %v", err)
-		}
-
+		cleanupOrdersAfter(t, db, snapshot)
 		db.Close()
 	})
 
@@ -116,5 +110,82 @@ func TestOrderRepositoryGetByID(t *testing.T) {
 			"expected total 100000, got %d",
 			found.TotalCents,
 		)
+	}
+}
+
+func TestOrderRepositoryConfirm(t *testing.T) {
+	config := loadConfig()
+	db := newDatabasePool(config)
+	ctx := context.Background()
+
+	snapshot := testOrderSnapshot(t, db)
+	t.Cleanup(func() {
+		cleanupOrdersAfter(t, db, snapshot)
+		db.Close()
+	})
+
+	repo := NewOrderRepository(db)
+
+	order, err := repo.Create(ctx, 1, "PENDING", 100000)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+
+	confirmed, err := repo.Confirm(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("failed to confirm order: %v", err)
+	}
+
+	if confirmed.Status != "CONFIRMED" {
+		t.Fatalf("expected CONFIRMED, got %s", confirmed.Status)
+	}
+}
+
+func TestOrderRepositoryRejectsInvalidTransitions(t *testing.T) {
+	config := loadConfig()
+	db := newDatabasePool(config)
+	ctx := context.Background()
+
+	snapshot := testOrderSnapshot(t, db)
+	t.Cleanup(func() {
+		cleanupOrdersAfter(t, db, snapshot)
+		db.Close()
+	})
+
+	repo := NewOrderRepository(db)
+
+	confirmedOrder, err := repo.Create(ctx, 1, "PENDING", 100000)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+
+	_, err = repo.Confirm(ctx, confirmedOrder.ID)
+	if err != nil {
+		t.Fatalf("failed to confirm order: %v", err)
+	}
+
+	_, err = repo.Confirm(ctx, confirmedOrder.ID)
+	if !errors.Is(err, ErrInvalidOrderState) {
+		t.Fatalf("expected ErrInvalidOrderState on repeated confirmation, got %v", err)
+	}
+
+	_, err = repo.Cancel(ctx, confirmedOrder.ID)
+	if !errors.Is(err, ErrInvalidOrderState) {
+		t.Fatalf("expected ErrInvalidOrderState when cancelling confirmed order, got %v", err)
+	}
+
+	cancelledOrder, err := repo.Create(ctx, 1, "PENDING", 100000)
+	if err != nil {
+		t.Fatalf("failed to create second order: %v", err)
+	}
+
+	_, err = repo.Cancel(ctx, cancelledOrder.ID)
+	if err != nil {
+		t.Fatalf("failed to cancel pending order: %v", err)
+	}
+
+	_, err = repo.Confirm(ctx, cancelledOrder.ID)
+	if !errors.Is(err, ErrInvalidOrderState) {
+		t.Fatalf("expected ErrInvalidOrderState when confirming cancelled order, got %v", err)
 	}
 }

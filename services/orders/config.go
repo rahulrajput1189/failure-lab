@@ -14,6 +14,7 @@ type Config struct {
 	DBName                    string
 	FailAfterInventoryReserve bool
 	FailAfterInventoryRelease bool
+	PaymentServiceURL         string
 }
 
 func loadConfig() Config {
@@ -29,6 +30,7 @@ func loadConfig() Config {
 			"FAILURELAB_FAIL_AFTER_INVENTORY_RELEASE",
 			"false",
 		) == "true",
+		PaymentServiceURL: getEnv("PAYMENT_SERVICE_URL", "http://localhost:8083"),
 	}
 }
 
