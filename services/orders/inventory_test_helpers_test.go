@@ -14,9 +14,10 @@ import (
 )
 
 type testInventoryServer struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	stock  map[int64]int
+	server      *httptest.Server
+	mu          sync.Mutex
+	stock       map[int64]int
+	releasedOps map[string]struct{}
 }
 
 func newTestInventoryServer(t *testing.T) *testInventoryServer {
@@ -28,6 +29,7 @@ func newTestInventoryServer(t *testing.T) *testInventoryServer {
 			2: 50,
 			3: 100,
 		},
+		releasedOps: make(map[string]struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -177,7 +179,13 @@ func (s *testInventoryServer) releaseStock(
 		return
 	}
 
-	s.stock[productID] += request.Quantity
+	operationKey := r.Header.Get("Idempotency-Key")
+	if operationKey == "" {
+		s.stock[productID] += request.Quantity
+	} else if _, alreadyReleased := s.releasedOps[operationKey]; !alreadyReleased {
+		s.stock[productID] += request.Quantity
+		s.releasedOps[operationKey] = struct{}{}
+	}
 
 	product := InventoryProduct{
 		ID:         productID,

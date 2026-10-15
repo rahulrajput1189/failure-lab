@@ -110,6 +110,30 @@ func paymentByID(
 		return
 	}
 
+	if parts[0] == "order" {
+		if len(parts) != 2 {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		orderID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || orderID <= 0 {
+			http.Error(w, "invalid order ID", http.StatusBadRequest)
+			return
+		}
+		payment, err := repo.GetByOrderID(r.Context(), orderID)
+		if err != nil {
+			writePaymentError(w, err)
+			return
+		}
+		writePaymentJSON(w, http.StatusOK, payment)
+		return
+	}
+
 	paymentID, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || paymentID <= 0 {
 		http.Error(w, "invalid payment ID", http.StatusBadRequest)

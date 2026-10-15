@@ -92,7 +92,7 @@ func (c *InventoryClient) ReserveStock(
 	productID int64,
 	quantity int,
 ) (*InventoryProduct, error) {
-	return c.changeStock(ctx, productID, quantity, "reserve")
+	return c.changeStock(ctx, productID, quantity, "reserve", "")
 }
 
 func (c *InventoryClient) ReleaseStock(
@@ -100,7 +100,20 @@ func (c *InventoryClient) ReleaseStock(
 	productID int64,
 	quantity int,
 ) (*InventoryProduct, error) {
-	return c.changeStock(ctx, productID, quantity, "release")
+	return c.changeStock(ctx, productID, quantity, "release", "")
+}
+
+func (c *InventoryClient) ReleaseStockWithKey(
+	ctx context.Context,
+	productID int64,
+	quantity int,
+	operationKey string,
+) (*InventoryProduct, error) {
+	if operationKey == "" {
+		return nil, fmt.Errorf("inventory release operation key is required")
+	}
+
+	return c.changeStock(ctx, productID, quantity, "release", operationKey)
 }
 
 func (c *InventoryClient) changeStock(
@@ -108,6 +121,7 @@ func (c *InventoryClient) changeStock(
 	productID int64,
 	quantity int,
 	action string,
+	operationKey string,
 ) (*InventoryProduct, error) {
 	body, err := json.Marshal(ReserveStockRequest{
 		Quantity: quantity,
@@ -138,6 +152,9 @@ func (c *InventoryClient) changeStock(
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if operationKey != "" {
+		req.Header.Set("Idempotency-Key", operationKey)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

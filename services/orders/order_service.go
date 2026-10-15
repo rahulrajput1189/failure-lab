@@ -215,62 +215,78 @@ func (s *OrderService) CancelOrder(
 	ctx context.Context,
 	orderID int64,
 ) (*Order, error) {
-	tx, err := beginTransaction(ctx, s.db)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to begin cancellation transaction: %w",
-			err,
-		)
+	if s.inventoryClient == nil {
+		return nil, fmt.Errorf("inventory client is not configured")
 	}
 
-	orderRepo := NewOrderRepository(tx)
-	orderItemRepo := NewOrderItemRepository(tx)
-
-	order, err := orderRepo.Cancel(ctx, orderID)
+	order, err := s.orderRepo.StartCancellation(ctx, orderID)
 	if err != nil {
-		tx.Rollback(ctx)
 		return nil, err
 	}
-
-	orderItem, err := orderItemRepo.GetByOrderID(ctx, orderID)
-	if err != nil {
-		tx.Rollback(ctx)
-		return nil, fmt.Errorf(
-			"failed to get order item: %w",
-			err,
-		)
+	if order.Status == "CANCELLED" {
+		return order, nil
 	}
 
-	_, err = s.inventoryClient.ReleaseStock(
+	orderItem, err := s.orderItemRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get order item for cancellation: %w", err)
+	}
+
+	// Refund before releasing stock. If a later step fails, the order remains
+	// CANCELLING; a retry observes REFUNDED and safely continues without a
+	// second refund.
+	if s.paymentClient != nil {
+		if err := s.refundOrderPayment(ctx, orderID); err != nil {
+			return nil, fmt.Errorf("failed to refund payment for order %d: %w", orderID, err)
+		}
+	}
+
+	operationKey := fmt.Sprintf("order-cancel-release:%d", orderID)
+	if _, err := s.inventoryClient.ReleaseStockWithKey(
 		ctx,
 		orderItem.ProductID,
 		orderItem.Quantity,
-	)
+		operationKey,
+	); err != nil {
+		return nil, fmt.Errorf("failed to release inventory for order %d: %w", orderID, err)
+	}
 
+	// This injection deliberately leaves the order in CANCELLING. A retry uses
+	// the same inventory idempotency key, so it cannot release stock twice.
 	if s.failAfterInventoryRelease {
-		tx.Rollback(ctx)
-
-		return nil, fmt.Errorf(
-			"failure injected after inventory release",
-		)
+		return nil, fmt.Errorf("failure injected after inventory release")
 	}
 
+	order, err = s.orderRepo.CompleteCancellation(ctx, orderID)
 	if err != nil {
-		tx.Rollback(ctx)
-		return nil, fmt.Errorf(
-			"failed to release inventory for cancelled order: %w",
-			err,
-		)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf(
-			"failed to commit cancellation transaction: %w",
-			err,
-		)
+		return nil, fmt.Errorf("inventory released but order cancellation remains pending: %w", err)
 	}
 
 	return order, nil
+}
+
+func (s *OrderService) refundOrderPayment(ctx context.Context, orderID int64) error {
+	payment, err := s.paymentClient.GetPaymentForOrder(ctx, orderID)
+	if errors.Is(err, ErrPaymentNotFound) {
+		// Orders created before payment integration, or orders whose payment
+		// creation never completed, have nothing to refund.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	switch payment.Status {
+	case PaymentStatusAuthorized:
+		_, err = s.paymentClient.RefundPayment(ctx, payment.ID)
+		return err
+	case PaymentStatusRefunded, PaymentStatusPending, PaymentStatusFailed:
+		// REFUNDED is an idempotent retry. PENDING and FAILED payments have
+		// not been authorized, so no refund is required.
+		return nil
+	default:
+		return fmt.Errorf("unsupported payment status %q for order %d", payment.Status, orderID)
+	}
 }
 
 func (s *OrderService) SetPaymentClient(client *PaymentClient) {

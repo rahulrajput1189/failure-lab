@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -343,4 +345,72 @@ func TestReleaseStockInvalidQuantity(t *testing.T) {
 			rec.Code,
 		)
 	}
+}
+
+func TestReleaseStockIdempotent(t *testing.T) {
+	db := newInventoryHTTPTestDB(t)
+	resetInventoryHTTPTestProduct(t, db)
+	repo := NewProductRepository(db)
+	ctx := context.Background()
+
+	if err := repo.ReserveStock(ctx, 1, 3); err != nil {
+		t.Fatalf("failed to prepare stock: %v", err)
+	}
+
+	operationKey := fmt.Sprintf("test-order-cancel-%d", time.Now().UnixNano())
+	for attempt := 0; attempt < 2; attempt++ {
+		body := bytes.NewBufferString(`{"quantity":3}`)
+		req := httptest.NewRequest(http.MethodPost, "/products/1/release", body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", operationKey)
+		rec := httptest.NewRecorder()
+
+		releaseStock(rec, req, repo)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d: expected status 200, got %d: %s", attempt+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	product, err := repo.GetByID(ctx, 1)
+	if err != nil {
+		t.Fatalf("failed to read product: %v", err)
+	}
+	if product.Stock != 10 {
+		t.Fatalf("expected duplicate release to leave stock at 10, got %d", product.Stock)
+	}
+
+	resetInventoryHTTPTestProduct(t, db)
+}
+
+func TestReleaseStockRejectsReusedIdempotencyKey(t *testing.T) {
+	db := newInventoryHTTPTestDB(t)
+	resetInventoryHTTPTestProduct(t, db)
+	repo := NewProductRepository(db)
+	ctx := context.Background()
+
+	operationKey := fmt.Sprintf("test-operation-key-conflict-%d", time.Now().UnixNano())
+	if err := repo.ReleaseStockIdempotent(ctx, operationKey, 1, 2); err != nil {
+		t.Fatalf("first release failed: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"quantity":3}`)
+	req := httptest.NewRequest(http.MethodPost, "/products/1/release", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", operationKey)
+	rec := httptest.NewRecorder()
+
+	releaseStock(rec, req, repo)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 for reused key, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	product, err := repo.GetByID(ctx, 1)
+	if err != nil {
+		t.Fatalf("failed to read product: %v", err)
+	}
+	if product.Stock != 12 {
+		t.Fatalf("expected conflicting request not to change stock from 12, got %d", product.Stock)
+	}
+
+	resetInventoryHTTPTestProduct(t, db)
 }

@@ -117,6 +117,80 @@ func (r *OrderRepository) Confirm(
 	)
 }
 
+// StartCancellation persists the saga's in-progress state before contacting
+// Inventory. Repeated calls are safe while the order is CANCELLING or CANCELLED.
+func (r *OrderRepository) StartCancellation(
+	ctx context.Context,
+	orderID int64,
+) (*Order, error) {
+	order := &Order{}
+	err := r.db.QueryRow(
+		ctx,
+		`UPDATE orders
+		 SET status = 'CANCELLING'
+		 WHERE id = $1 AND status IN ('PENDING', 'CONFIRMED')
+		 RETURNING id, user_id, status, total_cents`,
+		orderID,
+	).Scan(&order.ID, &order.UserID, &order.Status, &order.TotalCents)
+	if err == nil {
+		return order, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("start order cancellation: %w", err)
+	}
+
+	existing, lookupErr := r.GetByID(ctx, orderID)
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if existing.Status == "CANCELLING" || existing.Status == "CANCELLED" {
+		return existing, nil
+	}
+	return nil, fmt.Errorf(
+		"cannot start cancellation for order %d from status %s: %w",
+		orderID,
+		existing.Status,
+		ErrInvalidOrderState,
+	)
+}
+
+// CompleteCancellation finalizes a cancellation after Inventory confirms the
+// idempotent release. It is safe to retry after a lost response.
+func (r *OrderRepository) CompleteCancellation(
+	ctx context.Context,
+	orderID int64,
+) (*Order, error) {
+	order := &Order{}
+	err := r.db.QueryRow(
+		ctx,
+		`UPDATE orders
+		 SET status = 'CANCELLED'
+		 WHERE id = $1 AND status = 'CANCELLING'
+		 RETURNING id, user_id, status, total_cents`,
+		orderID,
+	).Scan(&order.ID, &order.UserID, &order.Status, &order.TotalCents)
+	if err == nil {
+		return order, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("complete order cancellation: %w", err)
+	}
+
+	existing, lookupErr := r.GetByID(ctx, orderID)
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if existing.Status == "CANCELLED" {
+		return existing, nil
+	}
+	return nil, fmt.Errorf(
+		"cannot complete cancellation for order %d from status %s: %w",
+		orderID,
+		existing.Status,
+		ErrInvalidOrderState,
+	)
+}
+
 func (r *OrderRepository) Cancel(
 	ctx context.Context,
 	orderID int64,

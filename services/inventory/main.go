@@ -18,6 +18,11 @@ type StockRequest struct {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrInventoryIdempotencyConflict) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(
 			w,
@@ -193,11 +198,21 @@ func releaseStock(
 		return
 	}
 
-	if err := productRepo.ReleaseStock(
-		r.Context(),
-		productID,
-		req.Quantity,
-	); err != nil {
+	if operationKey := r.Header.Get("Idempotency-Key"); operationKey != "" {
+		err = productRepo.ReleaseStockIdempotent(
+			r.Context(),
+			operationKey,
+			productID,
+			req.Quantity,
+		)
+	} else {
+		err = productRepo.ReleaseStock(
+			r.Context(),
+			productID,
+			req.Quantity,
+		)
+	}
+	if err != nil {
 		writeError(w, err)
 		return
 	}
