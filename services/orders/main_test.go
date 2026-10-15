@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestCreateOrderInvalidJSON(t *testing.T) {
@@ -323,4 +327,32 @@ func TestGetOrderInvalidID(t *testing.T) {
 	if rec.Body.String() != "invalid order ID\n" {
 		t.Fatalf("unexpected response: %q", rec.Body.String())
 	}
+}
+
+// TestMain serializes these integration tests against the shared PostgreSQL database.
+// The Orders tests clean up rows created after an ID snapshot, so they must not
+// overlap with Payment tests that also insert orders.
+const testDatabaseAdvisoryLock int64 = 741852963
+
+func TestMain(m *testing.M) {
+	conn, err := pgx.Connect(context.Background(), loadConfig().databaseURL())
+	if err != nil {
+		log.Fatalf("connect to PostgreSQL for test lock: %v", err)
+	}
+
+	if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_lock($1)", testDatabaseAdvisoryLock); err != nil {
+		_ = conn.Close(context.Background())
+		log.Fatalf("acquire test lock: %v", err)
+	}
+
+	code := m.Run()
+	if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", testDatabaseAdvisoryLock); err != nil {
+		log.Printf("release test lock: %v", err)
+		code = 1
+	}
+	if err := conn.Close(context.Background()); err != nil {
+		log.Printf("close test lock connection: %v", err)
+		code = 1
+	}
+	os.Exit(code)
 }
