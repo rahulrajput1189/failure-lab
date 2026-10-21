@@ -1,0 +1,8 @@
+schemaVersion: 1
+id: inventory-release-order-rollback
+name: Inventory Release with Order Rollback
+description: Inventory is released but the order cancellation transaction rolls back.
+tags:
+  - inventory
+  - orders
+  - transaction

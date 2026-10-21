@@ -1,0 +1,8 @@
+schemaVersion: 1
+id: order-cancellation-inventory-leak
+name: Order Cancellation Inventory Leak
+description: Cancelling an order leaves its inventory reservation unreleased.
+tags:
+  - inventory
+  - orders
+  - cancellation

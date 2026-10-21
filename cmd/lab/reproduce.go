@@ -55,10 +55,7 @@ func reproduceInventoryReservationLeak() error {
 
 	fmt.Println("✓ injected failure triggered")
 
-	fmt.Println()
-	fmt.Println("→ verifying scenario")
-
-	return verifyInventoryReservationLeak()
+	return nil
 }
 
 func reproduceOrderCancellationInventoryLeak() error {
@@ -133,10 +130,7 @@ func reproduceOrderCancellationInventoryLeak() error {
 
 	fmt.Println("✓ order cancelled")
 
-	fmt.Println()
-	fmt.Println("→ verifying scenario")
-
-	return verifyOrderCancellationInventoryLeak()
+	return nil
 }
 
 func reproduceInventoryReleaseOrderRollback() error {
@@ -210,10 +204,7 @@ func reproduceInventoryReleaseOrderRollback() error {
 
 	fmt.Println("✓ injected failure triggered")
 
-	fmt.Println()
-	fmt.Println("→ verifying scenario")
-
-	return verifyInventoryReleaseOrderRollback()
+	return nil
 }
 
 func createOrderRequest() (string, string, error) {

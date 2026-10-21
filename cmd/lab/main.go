@@ -18,6 +18,18 @@ func main() {
 	args := os.Args[2:]
 
 	switch command {
+
+	case "run":
+		if len(args) != 1 {
+			fmt.Println("usage: lab run <scenario>")
+			os.Exit(1)
+		}
+
+		if err := runScenario(args[0]); err != nil {
+			fmt.Printf("✗ %v\n", err)
+			os.Exit(1)
+		}
+
 	case "up":
 		run("docker", "compose", "-f", composeFile(), "up", "-d")
 
@@ -34,7 +46,14 @@ func main() {
 		reset()
 
 	case "scenarios":
-		listScenarios()
+		if len(args) != 0 {
+			fmt.Println("usage: lab scenarios")
+			os.Exit(1)
+		}
+		if err := listRegisteredScenarios(); err != nil {
+			fmt.Printf("✗ could not load scenario registry: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "verify":
 		if len(args) != 1 {
@@ -42,9 +61,21 @@ func main() {
 			os.Exit(1)
 		}
 
-		scenario := getScenario(args[0])
+		registered, err := getRegisteredScenario(args[0])
+		if err != nil {
+			fmt.Printf("✗ %v\n", err)
+			os.Exit(1)
+		}
 
-		if err := scenario.Verify(); err != nil {
+		if registered.Handler.Verify == nil {
+			fmt.Printf(
+				"scenario %q does not support verification\n",
+				registered.Manifest.ID,
+			)
+			os.Exit(1)
+		}
+
+		if err := registered.Handler.Verify(); err != nil {
 			fmt.Printf("\n✗ verification failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -55,17 +86,21 @@ func main() {
 			os.Exit(1)
 		}
 
-		scenario := getScenario(args[0])
+		registered, err := getRegisteredScenario(args[0])
+		if err != nil {
+			fmt.Printf("✗ %v\n", err)
+			os.Exit(1)
+		}
 
-		if scenario.Reproduce == nil {
+		if registered.Handler.Reproduce == nil {
 			fmt.Printf(
 				"scenario %q does not support reproduction\n",
-				scenario.Name,
+				registered.Manifest.ID,
 			)
 			os.Exit(1)
 		}
 
-		if err := scenario.Reproduce(); err != nil {
+		if err := registered.Handler.Reproduce(); err != nil {
 			fmt.Printf("\n✗ reproduction failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -92,7 +127,6 @@ func projectRoot() string {
 		}
 
 		parent := filepath.Dir(dir)
-
 		if parent == dir {
 			break
 		}
@@ -195,4 +229,33 @@ Commands:
   verify <scenario>               Verify a scenario
   reproduce <scenario>            Reproduce a failure scenario
 `)
+}
+
+func runScenario(id string) error {
+	registered, err := getRegisteredScenario(id)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Running scenario: %s\n", registered.Manifest.Name)
+
+	if registered.Handler.Reproduce == nil {
+		return fmt.Errorf("scenario %q has no reproduction handler", id)
+	}
+	if registered.Handler.Verify == nil {
+		return fmt.Errorf("scenario %q has no verification handler", id)
+	}
+
+	fmt.Println("\n→ reproducing failure")
+	if err := registered.Handler.Reproduce(); err != nil {
+		return fmt.Errorf("reproduction failed: %w", err)
+	}
+
+	fmt.Println("\n→ verifying resulting state")
+	if err := registered.Handler.Verify(); err != nil {
+		return fmt.Errorf("verification failed: %w", err)
+	}
+
+	fmt.Println("\n✓ scenario reproduced and verified")
+	return nil
 }

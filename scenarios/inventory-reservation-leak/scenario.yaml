@@ -1,0 +1,8 @@
+schemaVersion: 1
+id: inventory-reservation-leak
+name: Inventory Reservation Leak
+description: Inventory remains reserved after the order transaction rolls back.
+tags:
+  - inventory
+  - orders
+  - transaction
