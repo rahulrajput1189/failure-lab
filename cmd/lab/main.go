@@ -20,12 +20,7 @@ func main() {
 	switch command {
 
 	case "run":
-		if len(args) != 1 {
-			fmt.Println("usage: lab run <scenario>")
-			os.Exit(1)
-		}
-
-		if err := runScenario(args[0]); err != nil {
+		if err := runScenarioWithOptions(args); err != nil {
 			fmt.Printf("✗ %v\n", err)
 			os.Exit(1)
 		}

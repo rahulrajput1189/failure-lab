@@ -372,6 +372,7 @@ func startOrdersServiceWithEnvironment(
 	cmd.Stderr = logFile
 
 	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, fmt.Sprintf("FAILURELAB_SEED=%d", activeScenarioSeed))
 	cmd.Env = append(cmd.Env, extraEnvironment...)
 
 	if err := cmd.Start(); err != nil {
