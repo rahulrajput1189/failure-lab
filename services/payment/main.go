@@ -4,22 +4,54 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"failure-lab/internal/metrics"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const requestIDHeader = "X-Request-ID"
 
 type CreatePaymentRequest struct {
 	OrderID     int64 `json:"order_id"`
 	AmountCents int   `json:"amount_cents"`
 }
 
-func writePaymentError(w http.ResponseWriter, err error) {
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get(requestIDHeader))
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+
+		r.Header.Set(requestIDHeader, requestID)
+		w.Header().Set(requestIDHeader, requestID)
+
+		ctx := context.WithValue(r.Context(), requestIDContextKey{}, requestID)
+		slog.Info("request received",
+			"service", "payment",
+			"request_id", requestID,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+type requestIDContextKey struct{}
+
+func requestIDFromRequest(r *http.Request) string {
+	return r.Header.Get(requestIDHeader)
+}
+
+func writePaymentError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrPaymentNotFound):
 		http.Error(w, "payment not found", http.StatusNotFound)
@@ -28,17 +60,25 @@ func writePaymentError(w http.ResponseWriter, err error) {
 	case strings.Contains(err.Error(), "must be greater than zero"):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
-		log.Printf("payment request failed: %v", err)
+		slog.Error("payment request failed",
+			"service", "payment",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+		)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
-func writePaymentJSON(w http.ResponseWriter, status int, payment *Payment) {
+func writePaymentJSON(w http.ResponseWriter, r *http.Request, status int, payment *Payment) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(payment); err != nil {
-		log.Printf("failed to encode payment response: %v", err)
+		slog.Error("failed to encode payment response",
+			"service", "payment",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+		)
 	}
 }
 
@@ -59,11 +99,11 @@ func createPayment(
 
 	payment, err := repo.Create(r.Context(), req.OrderID, req.AmountCents)
 	if err != nil {
-		writePaymentError(w, err)
+		writePaymentError(w, r, err)
 		return
 	}
 
-	writePaymentJSON(w, http.StatusCreated, payment)
+	writePaymentJSON(w, r, http.StatusCreated, payment)
 }
 
 func getPayment(
@@ -74,11 +114,11 @@ func getPayment(
 ) {
 	payment, err := repo.GetByID(r.Context(), paymentID)
 	if err != nil {
-		writePaymentError(w, err)
+		writePaymentError(w, r, err)
 		return
 	}
 
-	writePaymentJSON(w, http.StatusOK, payment)
+	writePaymentJSON(w, r, http.StatusOK, payment)
 }
 
 func transitionPayment(
@@ -90,11 +130,11 @@ func transitionPayment(
 ) {
 	payment, err := transition(r.Context(), repo, paymentID)
 	if err != nil {
-		writePaymentError(w, err)
+		writePaymentError(w, r, err)
 		return
 	}
 
-	writePaymentJSON(w, http.StatusOK, payment)
+	writePaymentJSON(w, r, http.StatusOK, payment)
 }
 
 func paymentByID(
@@ -127,10 +167,10 @@ func paymentByID(
 		}
 		payment, err := repo.GetByOrderID(r.Context(), orderID)
 		if err != nil {
-			writePaymentError(w, err)
+			writePaymentError(w, r, err)
 			return
 		}
-		writePaymentJSON(w, http.StatusOK, payment)
+		writePaymentJSON(w, r, http.StatusOK, payment)
 		return
 	}
 
@@ -189,6 +229,11 @@ func health(
 	w.Header().Set("Content-Type", "application/json")
 
 	if err := db.Ping(r.Context()); err != nil {
+		slog.Error("health check failed",
+			"service", "payment",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+		)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"status":"not_ready"}`)
 		return
@@ -205,6 +250,8 @@ func liveness(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	config := loadConfig()
 
 	db := newDatabasePool(config)
@@ -253,15 +300,29 @@ func main() {
 		liveness(w, r)
 	})
 
+	serviceMetrics := metrics.New("payment")
+	mux.Handle("/metrics", serviceMetrics.Handler())
+
+	handler := requestIDMiddleware(mux)
+
+	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+
 	server := &http.Server{
 		Addr:              ":" + config.HTTPPort,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("payment service listening on :%s", config.HTTPPort)
+	slog.Info("payment service listening",
+		"service", "payment",
+		"port", config.HTTPPort,
+	)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		slog.Error("payment server failed",
+			"service", "payment",
+			"error", err,
+		)
+		os.Exit(1)
 	}
 }

@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -10,20 +11,41 @@ import (
 func newDatabasePool(config Config) *pgxpool.Pool {
 	poolConfig, err := pgxpool.ParseConfig(config.databaseURL())
 	if err != nil {
-		log.Fatalf("failed to parse database configuration: %v", err)
+		slog.Error("failed to parse database configuration",
+			"service", "inventory",
+			"error", err,
+		)
+		os.Exit(1)
+		return nil
 	}
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
-		log.Fatalf("failed to create database pool: %v", err)
+		slog.Error("failed to create database pool",
+			"service", "inventory",
+			"error", err,
+		)
+		os.Exit(1)
+		return nil
 	}
 
 	if err := pool.Ping(context.Background()); err != nil {
 		pool.Close()
-		log.Fatalf("failed to connect to database: %v", err)
+		slog.Error("failed to connect to database",
+			"service", "inventory",
+			"error", err,
+		)
+		os.Exit(1)
+		return nil
 	}
 
-	log.Println("connected to PostgreSQL")
+	slog.Info("connected to PostgreSQL",
+		"service", "inventory",
+	)
 
 	return pool
+}
+
+func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 }

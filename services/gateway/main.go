@@ -2,13 +2,38 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"failure-lab/internal/metrics"
+	"github.com/google/uuid"
 )
+
+const requestIDHeader = "X-Request-ID"
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := uuid.NewString()
+
+		r.Header.Set(requestIDHeader, requestID)
+
+		w.Header().Del(requestIDHeader)
+		slog.Info("request received",
+			"service", "gateway",
+			"request_id", requestID,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+		next.ServeHTTP(w, r)
+
+		w.Header().Set(requestIDHeader, requestID)
+	})
+}
 
 func health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -36,11 +61,19 @@ func newOrdersProxy(targetURL string) (http.Handler, error) {
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.SetURL(target)
 			req.SetXForwarded()
+			req.Out.Header.Set(requestIDHeader, req.In.Header.Get(requestIDHeader))
 		},
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("Orders service proxy error: %v", err)
+		slog.Error("proxy request failed",
+			"service", "gateway",
+			"target_service", "orders",
+			"request_id", r.Header.Get(requestIDHeader),
+			"error", err,
+			"path", r.URL.Path,
+			"method", r.Method,
+		)
 		http.Error(w, "orders service unavailable", http.StatusBadGateway)
 	}
 
@@ -85,15 +118,28 @@ func newGatewayHandler(ordersServiceURL string) (http.Handler, error) {
 	mux.Handle("/orders", ordersProxy)
 	mux.Handle("/orders/", ordersProxy)
 
-	return mux, nil
+	serviceMetrics := metrics.New("gateway")
+	mux.Handle("/metrics", serviceMetrics.Handler())
+
+	handler := requestIDMiddleware(mux)
+
+	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+
+	return handler, nil
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	config := loadConfig()
 
 	handler, err := newGatewayHandler(config.OrdersServiceURL)
 	if err != nil {
-		log.Fatalf("failed to configure Gateway: %v", err)
+		slog.Error("failed to configure service",
+			"service", "gateway",
+			"error", err,
+		)
+		return
 	}
 
 	server := &http.Server{
@@ -102,9 +148,15 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway service listening on :%s", config.HTTPPort)
+	slog.Info("service listening",
+		"service", "gateway",
+		"port", config.HTTPPort,
+	)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		slog.Error("HTTP server failed",
+			"service", "gateway",
+			"error", err,
+		)
 	}
 }

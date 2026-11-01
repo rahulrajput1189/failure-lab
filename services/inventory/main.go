@@ -4,44 +4,70 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
+	"failure-lab/internal/metrics"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const requestIDHeader = "X-Request-ID"
 
 type StockRequest struct {
 	Quantity int `json:"quantity"`
 }
 
-func writeError(w http.ResponseWriter, err error) {
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get(requestIDHeader))
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+
+		r.Header.Set(requestIDHeader, requestID)
+		w.Header().Set(requestIDHeader, requestID)
+
+		slog.Info("request received",
+			"service", "inventory",
+			"request_id", requestID,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestIDFromRequest(r *http.Request) string {
+	return r.Header.Get(requestIDHeader)
+}
+
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, ErrInventoryIdempotencyConflict) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(
-			w,
-			"product not found",
-			http.StatusNotFound,
-		)
+		http.Error(w, "product not found", http.StatusNotFound)
 		return
 	}
 
 	if strings.Contains(err.Error(), "insufficient stock") {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("inventory request failed: %v", err)
+	slog.Error("inventory request failed",
+		"service", "inventory",
+		"request_id", requestIDFromRequest(r),
+		"error", err,
+	)
 
 	http.Error(
 		w,
@@ -75,21 +101,13 @@ func getProduct(
 ) {
 	productID, err := parseProductID(r.URL.Path)
 	if err != nil {
-		http.Error(
-			w,
-			"invalid product ID",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid product ID", http.StatusBadRequest)
 		return
 	}
 
-	product, err := productRepo.GetByID(
-		r.Context(),
-		productID,
-	)
-
+	product, err := productRepo.GetByID(r.Context(), productID)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -97,7 +115,12 @@ func getProduct(
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(w).Encode(product); err != nil {
-		log.Printf("failed to encode product response: %v", err)
+		slog.Error("failed to encode product response",
+			"service", "inventory",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+			"product_id", productID,
+		)
 	}
 }
 
@@ -109,49 +132,29 @@ func reserveStock(
 	var req StockRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(
-			w,
-			"invalid JSON",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	if req.Quantity <= 0 {
-		http.Error(
-			w,
-			"quantity must be greater than zero",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "quantity must be greater than zero", http.StatusBadRequest)
 		return
 	}
 
 	productID, err := parseProductID(r.URL.Path)
 	if err != nil {
-		http.Error(
-			w,
-			"invalid product ID",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid product ID", http.StatusBadRequest)
 		return
 	}
 
-	if err := productRepo.ReserveStock(
-		r.Context(),
-		productID,
-		req.Quantity,
-	); err != nil {
-		writeError(w, err)
+	if err := productRepo.ReserveStock(r.Context(), productID, req.Quantity); err != nil {
+		writeError(w, r, err)
 		return
 	}
 
-	product, err := productRepo.GetByID(
-		r.Context(),
-		productID,
-	)
-
+	product, err := productRepo.GetByID(r.Context(), productID)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -159,7 +162,12 @@ func reserveStock(
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(w).Encode(product); err != nil {
-		log.Printf("failed to encode product response: %v", err)
+		slog.Error("failed to encode product response",
+			"service", "inventory",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+			"product_id", productID,
+		)
 	}
 }
 
@@ -171,30 +179,18 @@ func releaseStock(
 	var req StockRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(
-			w,
-			"invalid JSON",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	if req.Quantity <= 0 {
-		http.Error(
-			w,
-			"quantity must be greater than zero",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "quantity must be greater than zero", http.StatusBadRequest)
 		return
 	}
 
 	productID, err := parseProductID(r.URL.Path)
 	if err != nil {
-		http.Error(
-			w,
-			"invalid product ID",
-			http.StatusBadRequest,
-		)
+		http.Error(w, "invalid product ID", http.StatusBadRequest)
 		return
 	}
 
@@ -212,18 +208,15 @@ func releaseStock(
 			req.Quantity,
 		)
 	}
+
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	product, err := productRepo.GetByID(
-		r.Context(),
-		productID,
-	)
-
+	product, err := productRepo.GetByID(r.Context(), productID)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -231,7 +224,12 @@ func releaseStock(
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(w).Encode(product); err != nil {
-		log.Printf("failed to encode product response: %v", err)
+		slog.Error("failed to encode product response",
+			"service", "inventory",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+			"product_id", productID,
+		)
 	}
 }
 
@@ -243,6 +241,11 @@ func health(
 	w.Header().Set("Content-Type", "application/json")
 
 	if err := db.Ping(r.Context()); err != nil {
+		slog.Error("health check failed",
+			"service", "inventory",
+			"request_id", requestIDFromRequest(r),
+			"error", err,
+		)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"status":"not_ready"}`)
 		return
@@ -258,11 +261,12 @@ func liveness(
 ) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
 	fmt.Fprint(w, `{"status":"alive"}`)
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	config := loadConfig()
 
 	db := newDatabasePool(config)
@@ -270,7 +274,9 @@ func main() {
 
 	productRepo := NewProductRepository(db)
 
-	http.HandleFunc("/products/", func(
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/products/", func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
@@ -290,32 +296,36 @@ func main() {
 			releaseStock(w, r, productRepo)
 
 		default:
-			http.Error(
-				w,
-				"not found",
-				http.StatusNotFound,
-			)
+			http.Error(w, "not found", http.StatusNotFound)
 		}
 	})
 
-	http.HandleFunc("/health", func(
+	mux.HandleFunc("/health", func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
 		health(w, r, db)
 	})
 
-	http.HandleFunc("/liveness", liveness)
+	mux.HandleFunc("/liveness", liveness)
 
-	log.Printf(
-		"inventory service listening on :%s",
-		config.HTTPPort,
+	serviceMetrics := metrics.New("inventory")
+	mux.Handle("/metrics", serviceMetrics.Handler())
+
+	handler := requestIDMiddleware(mux)
+
+	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+
+	slog.Info("service listening",
+		"service", "inventory",
+		"port", config.HTTPPort,
 	)
 
-	if err := http.ListenAndServe(
-		":"+config.HTTPPort,
-		nil,
-	); err != nil {
-		log.Fatal(err)
+	if err := http.ListenAndServe(":"+config.HTTPPort, handler); err != nil {
+		slog.Error("HTTP server failed",
+			"service", "inventory",
+			"error", err,
+		)
+		os.Exit(1)
 	}
 }

@@ -63,6 +63,7 @@ func (c *PaymentClient) CreatePayment(
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	setRequestIDHeader(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -107,6 +108,8 @@ func (c *PaymentClient) getPayment(ctx context.Context, url string) (*Payment, e
 		return nil, fmt.Errorf("build payment lookup request: %w", err)
 	}
 
+	setRequestIDHeader(req, ctx)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("payment lookup request failed: %w", err)
@@ -118,13 +121,18 @@ func (c *PaymentClient) getPayment(ctx context.Context, url string) (*Payment, e
 	}
 	if resp.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("payment lookup returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return nil, fmt.Errorf(
+			"payment lookup returned HTTP %d: %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+		)
 	}
 
 	var payment Payment
 	if err := json.NewDecoder(resp.Body).Decode(&payment); err != nil {
 		return nil, fmt.Errorf("decode payment lookup response: %w", err)
 	}
+
 	return &payment, nil
 }
 
@@ -141,6 +149,8 @@ func (c *PaymentClient) AuthorizePayment(
 	if err != nil {
 		return nil, fmt.Errorf("build payment authorization request: %w", err)
 	}
+
+	setRequestIDHeader(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -190,6 +200,8 @@ func (c *PaymentClient) RefundPayment(
 		return nil, fmt.Errorf("build payment refund request: %w", err)
 	}
 
+	setRequestIDHeader(req, ctx)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refund payment request failed: %w", err)
@@ -209,12 +221,17 @@ func (c *PaymentClient) RefundPayment(
 	}
 	if resp.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("payment refund returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return nil, fmt.Errorf(
+			"payment refund returned HTTP %d: %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+		)
 	}
 
 	var payment Payment
 	if err := json.NewDecoder(resp.Body).Decode(&payment); err != nil {
 		return nil, fmt.Errorf("decode payment refund response: %w", err)
 	}
+
 	return &payment, nil
 }

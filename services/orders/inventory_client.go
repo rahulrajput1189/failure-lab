@@ -8,6 +8,12 @@ import (
 	"net/http"
 )
 
+func setRequestIDHeader(req *http.Request, ctx context.Context) {
+	if requestID := requestIDFromContext(ctx); requestID != "" {
+		req.Header.Set(requestIDHeader, requestID)
+	}
+}
+
 type InventoryClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -50,6 +56,8 @@ func (c *InventoryClient) GetProduct(
 			err,
 		)
 	}
+
+	setRequestIDHeader(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -152,6 +160,8 @@ func (c *InventoryClient) changeStock(
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	setRequestIDHeader(req, ctx)
+
 	if operationKey != "" {
 		req.Header.Set("Idempotency-Key", operationKey)
 	}
