@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"failure-lab/internal/metrics"
+	"failure-lab/internal/tracing"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -35,12 +37,14 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 		w.Header().Set(requestIDHeader, requestID)
 
 		ctx := context.WithValue(r.Context(), requestIDContextKey{}, requestID)
+
 		slog.Info("request received",
 			"service", "payment",
 			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
 		)
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -55,16 +59,20 @@ func writePaymentError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrPaymentNotFound):
 		http.Error(w, "payment not found", http.StatusNotFound)
+
 	case errors.Is(err, ErrInvalidPaymentState):
 		http.Error(w, err.Error(), http.StatusConflict)
+
 	case strings.Contains(err.Error(), "must be greater than zero"):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+
 	default:
 		slog.Error("payment request failed",
 			"service", "payment",
 			"request_id", requestIDFromRequest(r),
 			"error", err,
 		)
+
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
@@ -155,21 +163,25 @@ func paymentByID(
 			http.NotFound(w, r)
 			return
 		}
+
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
 		orderID, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || orderID <= 0 {
 			http.Error(w, "invalid order ID", http.StatusBadRequest)
 			return
 		}
+
 		payment, err := repo.GetByOrderID(r.Context(), orderID)
 		if err != nil {
 			writePaymentError(w, r, err)
 			return
 		}
+
 		writePaymentJSON(w, r, http.StatusOK, payment)
 		return
 	}
@@ -203,10 +215,12 @@ func paymentByID(
 		handler = func(ctx context.Context, repo *PaymentRepository, id int64) (*Payment, error) {
 			return repo.Authorize(ctx, id)
 		}
+
 	case "refund":
 		handler = func(ctx context.Context, repo *PaymentRepository, id int64) (*Payment, error) {
 			return repo.Refund(ctx, id)
 		}
+
 	default:
 		http.NotFound(w, r)
 		return
@@ -234,6 +248,7 @@ func health(
 			"request_id", requestIDFromRequest(r),
 			"error", err,
 		)
+
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"status":"not_ready"}`)
 		return
@@ -251,6 +266,24 @@ func liveness(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	tracerProvider, err := tracing.Init("payment")
+	if err != nil {
+		slog.Error("failed to initialize tracing",
+			"service", "payment",
+			"error", err,
+		)
+		return
+	}
+
+	defer func() {
+		if err := tracing.Shutdown(context.Background(), tracerProvider); err != nil {
+			slog.Error("failed to shut down tracing",
+				"service", "payment",
+				"error", err,
+			)
+		}
+	}()
 
 	config := loadConfig()
 
@@ -304,8 +337,11 @@ func main() {
 	mux.Handle("/metrics", serviceMetrics.Handler())
 
 	handler := requestIDMiddleware(mux)
-
 	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+	handler = otelhttp.NewHandler(handler, "payment",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/metrics"
+		}))
 
 	server := &http.Server{
 		Addr:              ":" + config.HTTPPort,

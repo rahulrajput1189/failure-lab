@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"failure-lab/internal/metrics"
+	"failure-lab/internal/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -58,6 +61,7 @@ func newOrdersProxy(targetURL string) (http.Handler, error) {
 	}
 
 	proxy := &httputil.ReverseProxy{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.SetURL(target)
 			req.SetXForwarded()
@@ -122,14 +126,34 @@ func newGatewayHandler(ordersServiceURL string) (http.Handler, error) {
 	mux.Handle("/metrics", serviceMetrics.Handler())
 
 	handler := requestIDMiddleware(mux)
-
 	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+	handler = otelhttp.NewHandler(handler, "gateway",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/metrics"
+		}))
 
 	return handler, nil
 }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	tracerProvider, err := tracing.Init("gateway")
+	if err != nil {
+		slog.Error("failed to initialize tracing",
+			"service", "gateway",
+			"error", err,
+		)
+		return
+	}
+	defer func() {
+		if err := tracing.Shutdown(context.Background(), tracerProvider); err != nil {
+			slog.Error("failed to shut down tracing",
+				"service", "gateway",
+				"error", err,
+			)
+		}
+	}()
 
 	config := loadConfig()
 

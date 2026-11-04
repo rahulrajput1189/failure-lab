@@ -12,9 +12,12 @@ import (
 	"strings"
 
 	"failure-lab/internal/metrics"
+	"failure-lab/internal/tracing"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -24,6 +27,7 @@ type CreateOrderRequest struct {
 	ProductID int64 `json:"product_id"`
 	Quantity  int   `json:"quantity"`
 }
+
 type requestIDContextKey struct{}
 
 func requestIDMiddleware(next http.Handler) http.Handler {
@@ -44,6 +48,7 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", r.URL.Path,
 		)
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -210,6 +215,7 @@ func health(w http.ResponseWriter, r *http.Request, db *pgxpool.Pool) {
 			"request_id", requestIDFromRequest(r),
 			"error", err,
 		)
+
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"status":"not_ready"}`)
 		return
@@ -228,7 +234,26 @@ func liveness(w http.ResponseWriter, r *http.Request) {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
+	tracerProvider, err := tracing.Init("orders")
+	if err != nil {
+		slog.Error("failed to initialize tracing",
+			"service", "orders",
+			"error", err,
+		)
+		return
+	}
+
+	defer func() {
+		if err := tracing.Shutdown(context.Background(), tracerProvider); err != nil {
+			slog.Error("failed to shut down tracing",
+				"service", "orders",
+				"error", err,
+			)
+		}
+	}()
+
 	config := loadConfig()
+
 	db := newDatabasePool(config)
 	defer db.Close()
 
@@ -236,9 +261,13 @@ func main() {
 	orderRepo := NewOrderRepository(db)
 	orderItemRepo := NewOrderItemRepository(db)
 
+	httpClient := &http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
+
 	inventoryClient := NewInventoryClient(
 		"http://localhost:8082",
-		http.DefaultClient,
+		httpClient,
 	)
 
 	orderService := NewOrderService(
@@ -251,8 +280,9 @@ func main() {
 
 	paymentClient := NewPaymentClient(
 		config.PaymentServiceURL,
-		http.DefaultClient,
+		httpClient,
 	)
+
 	orderService.SetPaymentClient(paymentClient)
 
 	orderService.failAfterInventoryReserve = config.FailAfterInventoryReserve
@@ -290,8 +320,11 @@ func main() {
 	mux.Handle("/metrics", serviceMetrics.Handler())
 
 	handler := requestIDMiddleware(mux)
-
 	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+	handler = otelhttp.NewHandler(handler, "orders",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/metrics"
+		}))
 
 	slog.Info("orders service listening",
 		"service", "orders",

@@ -1,3 +1,4 @@
+
 package tracing
 
 import (
@@ -6,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -16,6 +18,15 @@ func Init(serviceName string) (*sdktrace.TracerProvider, error) {
 		return nil, errors.New("service name cannot be empty")
 	}
 
+	exporter, err := otlptracegrpc.New(
+		context.Background(),
+		otlptracegrpc.WithEndpoint("localhost:4319"),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	res := resource.NewWithAttributes(
 		"",
 		attribute.String("service.name", serviceName),
@@ -23,6 +34,7 @@ func Init(serviceName string) (*sdktrace.TracerProvider, error) {
 
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exporter),
 		sdktrace.WithSampler(
 			sdktrace.ParentBased(sdktrace.AlwaysSample()),
 		),

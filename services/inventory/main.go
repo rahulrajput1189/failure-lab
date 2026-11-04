@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,12 @@ import (
 	"strings"
 
 	"failure-lab/internal/metrics"
+	"failure-lab/internal/tracing"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -246,6 +250,7 @@ func health(
 			"request_id", requestIDFromRequest(r),
 			"error", err,
 		)
+
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"status":"not_ready"}`)
 		return
@@ -266,6 +271,24 @@ func liveness(
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	tracerProvider, err := tracing.Init("inventory")
+	if err != nil {
+		slog.Error("failed to initialize tracing",
+			"service", "inventory",
+			"error", err,
+		)
+		return
+	}
+
+	defer func() {
+		if err := tracing.Shutdown(context.Background(), tracerProvider); err != nil {
+			slog.Error("failed to shut down tracing",
+				"service", "inventory",
+				"error", err,
+			)
+		}
+	}()
 
 	config := loadConfig()
 
@@ -313,8 +336,11 @@ func main() {
 	mux.Handle("/metrics", serviceMetrics.Handler())
 
 	handler := requestIDMiddleware(mux)
-
 	handler = serviceMetrics.Middleware(metrics.RoutePattern, handler)
+	handler = otelhttp.NewHandler(handler, "inventory",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/metrics"
+		}))
 
 	slog.Info("service listening",
 		"service", "inventory",
