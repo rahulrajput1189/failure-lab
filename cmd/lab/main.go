@@ -100,6 +100,12 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "metrics":
+		if err := runMetricsSummary(args); err != nil {
+			fmt.Printf("✗ %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Printf("unknown command: %s\n\n", command)
 		usage()
@@ -223,6 +229,7 @@ Commands:
   scenarios                       List available failure scenarios
   verify <scenario>               Verify a scenario
   reproduce <scenario>            Reproduce a failure scenario
+  metrics                         Show service metrics summary
 `)
 }
 
