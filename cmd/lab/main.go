@@ -106,6 +106,12 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "traces":
+		if err := runTracesSummary(args); err != nil {
+			fmt.Printf("✗ %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Printf("unknown command: %s\n\n", command)
 		usage()
@@ -230,6 +236,7 @@ Commands:
   verify <scenario>               Verify a scenario
   reproduce <scenario>            Reproduce a failure scenario
   metrics                         Show service metrics summary
+  traces                          Show distributed trace summary
 `)
 }
 
