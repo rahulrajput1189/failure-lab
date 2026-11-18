@@ -1,11 +1,12 @@
-.PHONY: build install test
+
+.PHONY: build test clean
 
 build:
+	mkdir -p bin
 	go build -o bin/lab ./cmd/lab
-
-install: build
-	mkdir -p $(HOME)/bin
-	cp bin/lab $(HOME)/bin/lab
 
 test:
 	go test ./...
+
+clean:
+	rm -rf bin

@@ -1,5 +1,6 @@
 # Binaries and build artifacts
 /bin/
+/lab
 /build/
 /dist/
 *.exe
@@ -73,3 +74,4 @@ npm-debug.log*
 yarn-debug.log*
 
 .local/
+
